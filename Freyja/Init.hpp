@@ -86,7 +86,7 @@ inline llama_sampler* CreateSampler(llama_context* context)
 {
     std::cout << "[SAMPLER] Creating sampler...\n";
 
-    llama_sampler* sampler = llama_sampler_init_greedy();
+    llama_sampler* sampler = llama_sampler_init_greedy(); // TODO : Real sampler with custom parameters
     if (!sampler)
     {
         std::cerr << "[SAMPLER] Error: cannot create sampler!" << std::endl;

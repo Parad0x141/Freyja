@@ -26,5 +26,6 @@ private:
     llama_sampler* sampler = nullptr;
     PromptComposer Composer;
 
+    int currentPos_ = 0;
     int nCtxSize_ = 0; // Stored for sliding window management
 };

@@ -130,12 +130,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Freyja.cpp" />
+    <ClCompile Include="MasterCore.cpp" />
     <ClCompile Include="PromptComposer.cpp" />
     <ClCompile Include="Session.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Common.hpp" />
     <ClInclude Include="Init.hpp" />
+    <ClInclude Include="MasterCore.hpp" />
     <ClInclude Include="PromptComposer.hpp" />
     <ClInclude Include="Session.hpp" />
   </ItemGroup>

@@ -9,11 +9,8 @@ Session::Session(const std::string& modelPath,
     int nBatchSize,
     const std::string& systemPrompt,
     PromptFormat format)
-    : Composer(systemPrompt, "", format), nCtxSize_(nCtxSize)
+    : Composer(systemPrompt, "", format), nCtxSize_(nCtxSize), currentPos_(0)
 {
-    
-
-
     std::cout << "[SESSION] Loading model...\n";
     model = LoadModel(modelPath, nGpuLayers);
     if (!model)
@@ -28,25 +25,24 @@ Session::Session(const std::string& modelPath,
     sampler = CreateSampler(context);
     if (!sampler)
         throw std::runtime_error("Sampler is null after initialization.");
-
 }
 
 std::string Session::Ask(const std::string& userPrompt, int maxNew)
 {
-    std::cout << "\n[ASK] ========================================\n";
-    std::cout << "[ASK] Starting Ask()\n";
+   //  std::cout << "\n[ASK] ========================================\n";
+   // std::cout << "[ASK] Starting Ask() at position " << currentPos_ << "\n";
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
     Composer.SetUser(userPrompt);
     const std::string sanitizedPrompt = Composer.Build();
 
-    std::cout << "[ASK] Prompt length: " << sanitizedPrompt.length() << " chars\n";
-    std::cout << "[ASK] Prompt:\n" << sanitizedPrompt << "\n";
+  //  std::cout << "[ASK] Prompt length: " << sanitizedPrompt.length() << " chars\n";
+  //  std::cout << "[ASK] Prompt:\n" << sanitizedPrompt << "\n";
 
     int32_t text_len = static_cast<int32_t>(sanitizedPrompt.length());
 
     /*   tokenize */
-    std::cout << "[ASK] Tokenizing (pass 1)...\n";
+   // std::cout << "[ASK] Tokenizing (pass 1)...\n";
     llama_token buf[4096];
     int n = llama_tokenize(vocab,
         sanitizedPrompt.c_str(),
@@ -55,7 +51,7 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
         true,   // add_special
         true);  // parse_special
 
-    if (n < 0) 
+    if (n < 0)
     {
         std::cout << "[ASK] First pass failed (" << n << "), retrying without special parsing...\n";
         n = llama_tokenize(vocab,
@@ -73,23 +69,34 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
     std::cout << "[ASK] Tokens: " << n << "\n";
     std::vector<llama_token> tokens(buf, buf + n);
 
-    /*   clear memory for consecutive positions */
+    /*  Get memory handle for sliding window management */
     llama_memory_t mem = llama_get_memory(context);
-    std::cout << "[ASK] Clearing memory for consecutive positions...\n";
-	llama_memory_clear(mem, true); // BAD, stateless that way, but easier for now
+
+    // Fixed, slide before new tokens to avoid overflow
+    if (currentPos_ + n + maxNew >= nCtxSize_)  // Now predict overflow
+    {
+        int keep = nCtxSize_ / 2;
+        std::cout << "[ASK] Pre-emptive sliding window! Keeping last "
+            << keep << " tokens\n";
+        llama_memory_seq_rm(mem, 0, 0, currentPos_ - keep);
+        llama_memory_seq_add(mem, 0, 0, -1, -(currentPos_ - keep));
+        currentPos_ = keep;
+    }
 
     /*  prompt batch */
     llama_batch batch = llama_batch_init(n, 0, 1);
-    for (int32_t i = 0; i < n; ++i) {
+    for (int32_t i = 0; i < n; ++i) 
+    {
         batch.token[i] = tokens[i];
-        batch.pos[i] = i;
+        batch.pos[i] = currentPos_ + i;  // Continue from current position
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
         batch.logits[i] = (i == n - 1);
     }
+
     batch.n_tokens = n;
 
-    std::cout << "[ASK] Decoding prompt batch...\n";
+   // std::cout << "[ASK] Decoding prompt batch...\n";
     if (llama_decode(context, batch) != 0)
     {
         llama_batch_free(batch);
@@ -97,9 +104,11 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
     }
     llama_batch_free(batch);
 
+    currentPos_ += n;  // Update position after prompt
+
     /*  generation loop */
     if (!llama_memory_can_shift(mem))
-        throw std::runtime_error("[ASK] Memory doesn't support shifting");
+        throw std::runtime_error("[DEBUG] Memory doesn't support shifting");
 
     llama_batch single = llama_batch_init(1, 0, 1);
     single.n_seq_id[0] = 1;
@@ -109,21 +118,21 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
 
     std::string out;
     out.reserve(maxNew * 4);
-    int currentPos = n;
 
-    std::cout << "[ASK] Starting token generation...\n";
+    std::cout << "Freyja is thinking...\n\n";
     for (int i = 0; i < maxNew; ++i)
     {
         if (i && i % 20 == 0)
-            std::cout << "[ASK] Generated " << i << " tokens...\n";
+           // std::cout << "[ASK] Generated " << i << " tokens...\n";
 
-        /* sliding window */
-        if (currentPos >= nCtxSize_)
+        /* sliding window during generation */
+        if (currentPos_ >= nCtxSize_)
         {
             int keep = nCtxSize_ / 2;
-            llama_memory_seq_rm(mem, 0, 0, nCtxSize_ - keep);
-            llama_memory_seq_add(mem, 0, 0, -1, -(nCtxSize_ - keep));
-            currentPos = keep;
+            std::cout << "[ASK] Sliding window during generation!\n";
+            llama_memory_seq_rm(mem, 0, 0, currentPos_ - keep);
+            llama_memory_seq_add(mem, 0, 0, -1, -(currentPos_ - keep));
+            currentPos_ = keep;
         }
 
         /* sample */
@@ -137,7 +146,7 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
 
         /* decode single token */
         single.token[0] = id;
-        single.pos[0] = currentPos++;
+        single.pos[0] = currentPos_++;
         if (llama_decode(context, single) != 0)
         {
             llama_batch_free(single);
@@ -146,7 +155,9 @@ std::string Session::Ask(const std::string& userPrompt, int maxNew)
     }
 
     llama_batch_free(single);
-    std::cout << "[ASK] Generation complete! (" << out.size() << " chars)\n";
+   // std::cout << "[ASK] Generation complete! (" << out.size() << " chars)\n";
+    std::cout << "[DEBUG] Current position in context: " << currentPos_ << "/" << nCtxSize_ << "\n\n";
+
     return out;
 }
 
@@ -154,12 +165,12 @@ Session::~Session()
 {
     std::cout << "[SESSION] Destructor called\n";
 
-    if (sampler) 
+    if (sampler)
     {
         llama_sampler_free(sampler);
         sampler = nullptr;
     }
-    if (context) 
+    if (context)
     {
         llama_free(context);
         context = nullptr;
